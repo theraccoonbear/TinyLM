@@ -943,13 +943,26 @@ fn main() {
         let epoch_time = avg_batch_time * batches_per_epoch as u32;
 
         let total_tokens = tokens_all.len();
-        let suggested_epochs = ((2_000_000f64 / total_tokens.max(1) as f64).round() as usize).clamp(15, 400);
+        // Floor scales with vocab_size, not just a flat 15. Why: a bigger
+        // output softmax has more classes to calibrate, which takes more
+        // EPOCHS (more full passes through the LR schedule) to converge —
+        // not just more raw token exposure. Measured directly: sherlock
+        // (vocab 8000) got MORE total token-exposures than mothergoose
+        // (vocab 3179, 83 epochs) by hitting the old flat floor of 15
+        // epochs, yet converged to a much smaller fraction of its
+        // distance-from-random-baseline (~5% vs ~15%) — proof it was
+        // epochs, not tokens, that were the binding constraint. Divisor
+        // calibrated off that comparison (vocab_size / 200 ~= 40 for
+        // vocab 8000, in the range that comparison suggested was needed).
+        let vocab_floor = (vocab.len() as f64 / 200.0).round() as usize;
+        let min_epochs = 15usize.max(vocab_floor);
+        let suggested_epochs = ((2_000_000f64 / total_tokens.max(1) as f64).round() as usize).clamp(min_epochs, 400);
         let total_time = epoch_time * suggested_epochs as u32;
 
         println!("\n--- Analysis ({} sample batch{}, not trained) ---", sample_count, if sample_count == 1 { "" } else { "es" });
         println!("Tokens: {total_tokens}   Vocab: {}   Sequences: {num_examples} (seq-len {seq_len})", vocab.len());
         println!("Measured: {avg_batch_time:.2?}/batch, {batches_per_epoch} batches/epoch -> ~{epoch_time:.2?}/epoch");
-        println!("Suggested epochs (~2M token-exposure budget, floor 15 / cap 400): {suggested_epochs}");
+        println!("Suggested epochs (~2M token-exposure budget, floor {min_epochs} [scales with vocab] / cap 400): {suggested_epochs}");
         println!("Estimated total training time: ~{total_time:.2?}");
         println!("\nSuggested command:");
         println!(
