@@ -81,51 +81,28 @@ h_t     = (1 - z_t)*h_{t-1} + z_t*h~_t             new hidden state
 P(next) = softmax(Wout·h_t + bout)
 ```
 
-That's the standard notation from the [GRU paper][gru] (and matches the
-variable names in the code — `z`, `r`, `hcand`, `h` — so you can jump
-straight from one to the other), but it's dense if you haven't seen it
-before. In plain English, per line:
+Standard notation from the [GRU paper][gru]; matches the code's variable
+names (`z`, `r`, `hcand`, `h`) directly. Per line:
 
-- **`z_t`, the update gate** — "of the new information available this
-  step, what fraction should actually overwrite memory?" A number
-  between 0 and 1 *per memory slot*, learned, not fixed.
-- **`r_t`, the reset gate** — "when computing a proposal for what the new
-  memory could look like, how much of the *old* memory should even be
-  considered?" Also 0–1 per slot. This is what lets the model learn to
-  deliberately forget — e.g. "a new sentence started, the old subject no
-  longer matters."
-- **`h~_t`, the candidate** — the actual proposed new content:
-  "given the current word, and whatever of the old memory the reset gate
-  let through, here's what memory *could* become."
-- **`h_t`, the new hidden state** — the real update, and the payoff for
-  having a *gate* instead of just overwriting: blend the old memory and
-  the candidate, weighted by the update gate. `z_t = 0` at some slot
-  means "ignore the candidate, keep that slot exactly as it was" —
-  memory that survives arbitrarily many steps if the model learns it
-  should. `z_t = 1` means "fully overwrite." Anything between is a mix.
-- **`P(next)`** — turn the current memory into next-token odds, exactly
-  like the output layer in v2 did with its fixed window — the only
-  difference now is what's feeding it.
+- **`z_t`, update gate** — per memory slot, what fraction of new
+  information should overwrite it (0–1, learned).
+- **`r_t`, reset gate** — per slot, how much of the *old* memory to
+  consider when proposing new content. What lets the model learn to
+  deliberately forget.
+- **`h~_t`, candidate** — the proposed new memory content, from the
+  current input plus whatever old memory the reset gate let through.
+- **`h_t`, new hidden state** — old memory and candidate, blended by the
+  update gate. `z_t = 0` at a slot means "keep it exactly," so a slot can
+  survive arbitrarily many steps if the model learns it should.
+- **`P(next)`** — the current memory turned into next-token odds, same
+  output layer as v2, just fed by a hidden state instead of a fixed
+  window.
 
-**Why `sigmoid` for gates and `tanh` for the candidate — and no, `tanh`
-is not `arctan`.** Both squash any real number into a fixed range —
-that's the whole job of a gate, since "how much to let through" only
-makes sense as a bounded number:
-
-- `sigmoid(x)` squishes to **(0, 1)** — read it as a percentage. That's
-  exactly what a gate needs: 0 = fully closed, 1 = fully open.
-- `tanh(x)` squishes to **(-1, 1)** — same S-curve shape, just centered
-  on zero instead of 0.5. The candidate memory needs to be able to push
-  a slot's value up *or* down, so it needs signed range, not a
-  percentage — hence `tanh` there instead of `sigmoid`.
-
-`tanh` is short for *hyperbolic* tangent — related to `sinh`/`cosh`, the
-hyperbolic-geometry cousins of `sin`/`cos`. It shares the letters "tan"
-with `arctan` (inverse tangent, from ordinary circular trigonometry)
-purely by naming coincidence — they're unrelated functions with
-different shapes. (If you want the exact relationship: `tanh(x) =
-2·sigmoid(2x) - 1` — same S-curve, just stretched and shifted. Not a
-coincidence; same family, different range.)
+`sigmoid` squashes to (0, 1), so it's used for the gates (a percentage:
+0 = closed, 1 = open). `tanh` squashes to (-1, 1), used for the
+candidate since memory needs to move in either direction, not just
+scale down. (`tanh` = hyperbolic tangent, unrelated to `arctan` despite
+the shared letters; `tanh(x) = 2·sigmoid(2x) - 1`.)
 
 [gru]: https://arxiv.org/abs/1406.1078
 
