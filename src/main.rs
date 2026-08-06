@@ -435,7 +435,7 @@ fn main() {
     // close to their real rate. A model that hasn't trained long enough
     // systematically underuses even the most common words in the
     // language, regardless of what caused the undertraining.
-    check_frequency_sanity(&tokens_all, &model, &vocab, &token_to_id);
+    let sanity_healthy = check_frequency_sanity(&tokens_all, &model, &vocab, &token_to_id);
 
     // ---------- 6. Generation ----------
     let prompt_ids: Vec<usize> = match &cli.prompt {
@@ -453,6 +453,17 @@ fn main() {
             generate(&model, &vocab, &token_to_id, &prompt_ids, cli.length, sample_seed, sampling)
         );
     }
+
+    // Distinct exit code (2) when THIS run trained and the result failed
+    // the sanity check — lets a calling script (see scripts/retrain_all.sh)
+    // reliably detect "needs more epochs" and automatically resume,
+    // instead of a human having to notice the warning in scrollback.
+    // Only applies when we actually trained this run; a plain
+    // --load-model --epochs 0 to look at text shouldn't fail a script
+    // just because someone's checking on an old model.
+    if cli.epochs > 0 && !sanity_healthy {
+        std::process::exit(2);
+    }
 }
 
 // Picks the corpus's most frequent real word tokens (skips punctuation/
@@ -461,8 +472,10 @@ fn main() {
 // (temperature 1.0, no top-k/top-p — measuring the model's honest
 // statistics, not whatever the user asked generation to look like), and
 // compares how often those words actually show up against how often they
-// should. Prints a loud warning if the ratio suggests undertraining.
-fn check_frequency_sanity(tokens_all: &[String], model: &Model, vocab: &[String], token_to_id: &HashMap<String, usize>) {
+// should. Prints a loud warning if the ratio suggests undertraining, and
+// returns whether it passed — the caller uses that both for its own exit
+// code and (in --epochs 0 cases) just informationally.
+fn check_frequency_sanity(tokens_all: &[String], model: &Model, vocab: &[String], token_to_id: &HashMap<String, usize>) -> bool {
     let mut freq: HashMap<&str, usize> = HashMap::new();
     for t in tokens_all {
         *freq.entry(t.as_str()).or_insert(0) += 1;
@@ -471,7 +484,7 @@ fn check_frequency_sanity(tokens_all: &[String], model: &Model, vocab: &[String]
     ranked.sort_by(|a, b| b.1.cmp(&a.1));
     let sentinels: Vec<(&str, f64)> = ranked.iter().take(8).map(|&(t, c)| (t, c as f64 / tokens_all.len() as f64)).collect();
     if sentinels.is_empty() || tokens_all.len() < 50 {
-        return; // too little data for this check to mean anything
+        return true; // too little data for this check to mean anything — don't block on it
     }
 
     let sample_len = tokens_all.len().min(1500).max(200);
@@ -510,7 +523,9 @@ fn check_frequency_sanity(tokens_all: &[String], model: &Model, vocab: &[String]
             "⚠ WARNING: the model uses its most common corpus words at only ~{:.0}% of their real rate.\n  That's the signature of undertraining (seen this exact pattern before) — more --epochs is\n  the fix, or --load-model this checkpoint and keep training with --checkpoint-every set.",
             avg_ratio * 100.0
         );
+        false
     } else {
         println!("Looks healthy (avg {:.2}x of real-corpus rate).", avg_ratio);
+        true
     }
 }
