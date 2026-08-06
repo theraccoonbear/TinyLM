@@ -41,13 +41,17 @@ BIN="./target/release/tinylm"
 # name : epochs : checkpoint-every
 # Epoch counts come from `tinylm --data-set corpora/<name>.txt --analyze`
 # runs at the current --vocab-size/--hidden-dim defaults, not guessed.
+# (grimm/sherlock/shakespeare were originally 15/15/15 from --analyze's
+# old flat epoch floor, which didn't scale with vocab_size and produced
+# genuinely undertrained models -- see the commit that fixed --analyze's
+# floor formula. Numbers below are post-fix.)
 CORPORA=(
     "mothergoose:83:10"
     "alice:51:10"
     "macbeth:78:10"
-    "grimm:15:3"
-    "sherlock:15:3"
-    "shakespeare:15:1"
+    "grimm:27:3"
+    "sherlock:40:5"
+    "shakespeare:40:1"
 )
 
 TRAINED=()
