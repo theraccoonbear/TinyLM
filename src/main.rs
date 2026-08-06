@@ -134,6 +134,24 @@ struct Cli {
     /// of a guess.
     #[arg(long)]
     diagnose_saturation: bool,
+
+    /// Sampling temperature. <1 sharpens the distribution toward already-
+    /// likely tokens (more repetitive, less erratic); >1 flattens it
+    /// (more diverse, more erratic). 1.0 = the model's raw distribution.
+    #[arg(long, default_value_t = 1.0)]
+    temperature: f32,
+
+    /// Restrict sampling to only the K most probable tokens each step
+    /// (renormalized). Cuts off the long tail of barely-likely tokens
+    /// that's a lot of what makes small-model output read as noise.
+    #[arg(long)]
+    top_k: Option<usize>,
+
+    /// Nucleus sampling: restrict to the smallest set of most-probable
+    /// tokens whose cumulative probability reaches this threshold (e.g.
+    /// 0.9), renormalized. An adaptive alternative/complement to --top-k.
+    #[arg(long)]
+    top_p: Option<f32>,
 }
 
 // ---------- Tokenizer ----------
@@ -653,6 +671,76 @@ impl Model {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SamplingConfig {
+    temperature: f32,
+    top_k: Option<usize>,
+    top_p: Option<f32>,
+}
+
+// Reshape a probability distribution before sampling from it. Doesn't
+// touch the model or its output layer at all — this is purely about
+// which of the model's own predictions we're willing to consider.
+//
+// Temperature: raising each probability to the power 1/T and
+// renormalizing is mathematically identical to softmax(logits/T) — same
+// result, without needing the raw logits. T<1 sharpens the distribution
+// toward already-likely tokens; T>1 flattens it toward uniform.
+//
+// top-k / top-p (nucleus): zero out everything outside the kept set and
+// renormalize what's left. Both exist to cut off the long tail of
+// barely-likely tokens — sampling from the FULL distribution every step
+// means occasionally drawing from that tail, which is a lot of what
+// makes small-model output read as noise instead of "weird but
+// purposeful."
+fn reshape_for_sampling(probs: &[f32], cfg: SamplingConfig) -> Vec<f32> {
+    let mut p: Vec<f32> = if (cfg.temperature - 1.0).abs() < 1e-6 {
+        probs.to_vec()
+    } else {
+        let scaled: Vec<f32> = probs.iter().map(|&x| x.max(1e-12).powf(1.0 / cfg.temperature)).collect();
+        let sum: f32 = scaled.iter().sum();
+        scaled.iter().map(|&x| x / sum).collect()
+    };
+
+    let renormalize = |p: &mut [f32]| {
+        let sum: f32 = p.iter().sum();
+        if sum > 0.0 {
+            for x in p.iter_mut() {
+                *x /= sum;
+            }
+        }
+    };
+
+    if let Some(k) = cfg.top_k {
+        let mut idx: Vec<usize> = (0..p.len()).collect();
+        idx.sort_unstable_by(|&a, &b| p[b].partial_cmp(&p[a]).unwrap());
+        for &i in idx.iter().skip(k) {
+            p[i] = 0.0;
+        }
+        renormalize(&mut p);
+    }
+
+    if let Some(top_p) = cfg.top_p {
+        let mut idx: Vec<usize> = (0..p.len()).collect();
+        idx.sort_unstable_by(|&a, &b| p[b].partial_cmp(&p[a]).unwrap());
+        let mut cum = 0.0f32;
+        let mut cutoff = idx.len();
+        for (rank, &i) in idx.iter().enumerate() {
+            cum += p[i];
+            if cum >= top_p {
+                cutoff = rank + 1;
+                break;
+            }
+        }
+        for &i in idx.iter().skip(cutoff) {
+            p[i] = 0.0;
+        }
+        renormalize(&mut p);
+    }
+
+    p
+}
+
 // ---------- Generation (autoregressive: feed output back in as next input) ----------
 // No fixed window here — the hidden state just keeps accumulating for as
 // long as we keep generating, which is the whole point of an RNN over a
@@ -664,6 +752,7 @@ fn generate(
     prompt_ids: &[usize],
     length: usize,
     seed: Option<u64>,
+    sampling: SamplingConfig,
 ) -> String {
     let mut rng = match seed {
         Some(s) => StdRng::seed_from_u64(s),
@@ -692,13 +781,16 @@ fn generate(
     }
 
     for _ in 0..length {
-        // Sample rather than always taking the top choice — this
-        // (temperature sampling) is the actual, sole source of "not the
-        // same twice." The forward pass is a pure function of the
-        // weights; only this draw is random, and only when `seed` is None.
+        // Sample rather than always taking the top choice — this is the
+        // actual, sole source of "not the same twice." The forward pass
+        // is a pure function of the weights; only this draw is random,
+        // and only when `seed` is None. `sampling` narrows/reshapes the
+        // distribution first (temperature/top-k/top-p) but never adds
+        // any information the model didn't already produce.
+        let sampling_probs = reshape_for_sampling(&last_probs, sampling);
         let mut r: f32 = rng.random();
         let mut chosen_id = 0;
-        for (j, &p) in last_probs.iter().enumerate() {
+        for (j, &p) in sampling_probs.iter().enumerate() {
             r -= p;
             if r <= 0.0 {
                 chosen_id = j;
@@ -967,10 +1059,15 @@ fn main() {
         None => Vec::new(),
     };
 
+    let sampling = SamplingConfig { temperature: cli.temperature, top_k: cli.top_k, top_p: cli.top_p };
+
     println!("\n--- Generated text ---");
     for i in 0..3u64 {
         let sample_seed = cli.seed.map(|s| s.wrapping_add(i));
-        println!("{}\n---", generate(&model, &vocab, &token_to_id, &prompt_ids, cli.length, sample_seed));
+        println!(
+            "{}\n---",
+            generate(&model, &vocab, &token_to_id, &prompt_ids, cli.length, sample_seed, sampling)
+        );
     }
 }
 
