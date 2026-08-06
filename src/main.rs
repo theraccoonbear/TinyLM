@@ -99,6 +99,14 @@ struct Cli {
     /// if --load-model was given and --epochs is 0).
     #[arg(long, value_name = "PATH")]
     save_model: Option<PathBuf>,
+
+    /// Don't train — measure real gradient-computation throughput on one
+    /// actual batch (your data, your hardware, your hyperparameters), then
+    /// print a suggested --epochs and an estimated total training time.
+    /// Replaces hand-fit constants from someone else's run with a live
+    /// measurement from this one.
+    #[arg(long)]
+    analyze: bool,
 }
 
 // ---------- Tokenizer ----------
@@ -716,6 +724,67 @@ fn main() {
         pos += seq_len;
     }
     let num_examples = chunk_starts.len();
+
+    // ---------- 3b. --analyze: measure, don't train ----------
+    // Runs a handful of REAL batches through the exact same parallel
+    // gradient path training uses, on this machine, with these
+    // hyperparameters — then extrapolates. No baked-in constants from
+    // someone else's run; this is a live measurement of your run.
+    if cli.analyze {
+        if num_examples == 0 {
+            println!("Not enough tokens ({}) for even one sequence of length {seq_len} — nothing to analyze.", ids.len());
+            return;
+        }
+        let batch_size = cli.batch_size.max(1).min(num_examples);
+        let num_threads = rayon::current_num_threads();
+        let vocab_size = model.vocab_size;
+        let embed_dim = model.embed_dim;
+        let hidden_dim = model.hidden_dim;
+        let batches_per_epoch = num_examples.div_ceil(batch_size);
+        let chunk_len = batch_size.div_ceil(num_threads).max(1);
+
+        let run_batch = |starts: &[usize]| {
+            starts
+                .par_chunks(chunk_len)
+                .map(|chunk| model.accumulate_gradients(chunk, &ids, seq_len))
+                .reduce(
+                    || Grad::zeros(vocab_size, embed_dim, hidden_dim),
+                    |mut a, b| {
+                        a.add_assign(&b);
+                        a
+                    },
+                )
+        };
+
+        run_batch(&chunk_starts[0..batch_size]); // warm up the thread pool/caches, discard timing
+
+        let sample_count = batches_per_epoch.min(4);
+        let mut total = std::time::Duration::ZERO;
+        for i in 0..sample_count {
+            let start_idx = (i * batch_size).min(num_examples - batch_size);
+            let t0 = Instant::now();
+            run_batch(&chunk_starts[start_idx..start_idx + batch_size]);
+            total += t0.elapsed();
+        }
+        let avg_batch_time = total / sample_count as u32;
+        let epoch_time = avg_batch_time * batches_per_epoch as u32;
+
+        let total_tokens = tokens_all.len();
+        let suggested_epochs = ((2_000_000f64 / total_tokens.max(1) as f64).round() as usize).clamp(15, 400);
+        let total_time = epoch_time * suggested_epochs as u32;
+
+        println!("\n--- Analysis ({} sample batch{}, not trained) ---", sample_count, if sample_count == 1 { "" } else { "es" });
+        println!("Tokens: {total_tokens}   Vocab: {}   Sequences: {num_examples} (seq-len {seq_len})", vocab.len());
+        println!("Measured: {avg_batch_time:.2?}/batch, {batches_per_epoch} batches/epoch -> ~{epoch_time:.2?}/epoch");
+        println!("Suggested epochs (~2M token-exposure budget, floor 15 / cap 400): {suggested_epochs}");
+        println!("Estimated total training time: ~{total_time:.2?}");
+        println!("\nSuggested command:");
+        println!(
+            "  tiny_llm --data-set {} --epochs {suggested_epochs} --save-model <path>",
+            data_path.display()
+        );
+        return;
+    }
 
     // ---------- 4. Training loop (mini-batch, parallel across cores) ----------
     if cli.epochs > 0 && num_examples > 0 {

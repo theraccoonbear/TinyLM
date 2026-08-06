@@ -31,9 +31,8 @@ more training: see [How it does it](#2-how-it-does-it) for why.
 
 You can train it on anything — we've run it on the complete works of
 Shakespeare, Alice in Wonderland, Sherlock Holmes, Grimm's Fairy Tales,
-The Real Mother Goose, and someone's memoir about accidentally causing
-part of the 2008 financial crisis. Pretrained models for all of these
-live in [`models/`](models/).
+and The Real Mother Goose. Pretrained models for all of these live in
+[`models/`](models/).
 
 ## 2. How it does it
 
@@ -149,20 +148,23 @@ the result. Useful flags:
 | `--max-chars <n>` | — | Truncate input to the first N characters |
 | `--save-model <path>` | — | Where to write the trained checkpoint |
 | `-l, --length <n>` | 80 | Tokens to generate per sample, after training |
+| `--analyze` | off | Don't train — measure and estimate instead (see below) |
 
-**Picking `--epochs`**: bigger corpora need fewer passes to see enough
-examples; tiny corpora need many more. A formula that's worked well here:
-`epochs ≈ clamp(round(2_000_000 / total_tokens), 15, 400)` — i.e., aim
-for roughly 2M total token-exposures across all epochs, floored at 15 so
-huge corpora aren't starved, capped at 400 so tiny corpora don't run
-forever. `total_tokens` is printed near the top of the run
-(`Tokenized into N tokens`) if you want to compute it after the fact.
+**Before committing to a long run**, use `--analyze`:
 
-**Estimating training time** before committing to a long run: the
-dominant cost is the output layer, so time roughly follows
-`tokens × (fixed_overhead + k × vocab_size)`. In practice, just time one
-epoch first (`--epochs 1`) and multiply — `Training took ...` is printed
-at the end of every run.
+```sh
+./target/release/tiny_llm --data-set corpora/shakespeare.txt --analyze
+```
+
+This runs a handful of *real* gradient-computation batches — your data,
+your hyperparameters, this machine — through the exact same parallel code
+path training uses, times them, and extrapolates: a suggested `--epochs`
+(targeting a ~2M-token-exposure budget across all epochs, floored at 15
+so huge corpora aren't starved, capped at 400 so tiny corpora don't run
+forever), an estimated per-epoch and total training time, and a
+ready-to-run command. It's a live measurement, not a canned formula — it
+stays honest even if you change `--hidden-dim`, `--batch-size`, or run it
+on different hardware.
 
 ## 4. How you use a model
 
@@ -180,8 +182,7 @@ number) to keep training the loaded model further instead — checkpoints
 are resumable.
 
 Pretrained checkpoints in [`models/`](models/), one per corpus in
-[`corpora/`](corpora/) (plus the full Shakespeare corpus at
-`shakespeare.clean.txt` in the repo root):
+[`corpora/`](corpora/):
 
 | Model | Trained on |
 |---|---|
@@ -191,4 +192,3 @@ Pretrained checkpoints in [`models/`](models/), one per corpus in
 | `models/sherlock.model` | The Adventures of Sherlock Holmes |
 | `models/grimm.model` | Grimm's Fairy Tales |
 | `models/mothergoose.model` | The Real Mother Goose (nursery rhymes) |
-| `models/no-good-deed.model` | A personal essay (tiny corpus — mostly memorized) |
