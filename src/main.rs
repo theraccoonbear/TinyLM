@@ -33,8 +33,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
+use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -107,6 +108,24 @@ struct Cli {
     /// measurement from this one.
     #[arg(long)]
     analyze: bool,
+
+    /// Seed generation with this text: the model "reads" it (advancing its
+    /// hidden state one token at a time, same math as training, just
+    /// without a loss) before generating anything new. Echoed in the
+    /// output, so unknown words showing up as <unk> is visible, not
+    /// silent. Omit to start from a single (invisible) newline, as before.
+    #[arg(long)]
+    prompt: Option<String>,
+
+    /// Seed the RNG used when sampling generated tokens, for reproducible
+    /// output. The forward pass itself is a pure function of the weights —
+    /// sampling is the *only* randomness in generation, so a fixed seed
+    /// makes a run fully deterministic. Each of the 3 printed samples
+    /// still differs from the others (seed, seed+1, seed+2), but rerunning
+    /// with the same --seed reproduces that exact set again. Omit for
+    /// fresh randomness every run (the default).
+    #[arg(long)]
+    seed: Option<u64>,
 }
 
 // ---------- Tokenizer ----------
@@ -611,21 +630,48 @@ impl Model {
 // No fixed window here — the hidden state just keeps accumulating for as
 // long as we keep generating, which is the whole point of an RNN over a
 // fixed-context model.
-fn generate(model: &Model, vocab: &[String], token_to_id: &HashMap<String, usize>, length: usize) -> String {
+fn generate(
+    model: &Model,
+    vocab: &[String],
+    token_to_id: &HashMap<String, usize>,
+    prompt_ids: &[usize],
+    length: usize,
+    seed: Option<u64>,
+) -> String {
+    let mut rng = match seed {
+        Some(s) => StdRng::seed_from_u64(s),
+        None => StdRng::from_os_rng(),
+    };
+
+    // Seed sequence: the caller's prompt (tokenized against this model's
+    // own vocab — unknown words become <unk>), or a single newline
+    // ("start of a line") if no prompt was given.
+    let newline_id = token_to_id.get("\n").copied().unwrap_or(0);
+    let seed_ids: Vec<usize> = if prompt_ids.is_empty() { vec![newline_id] } else { prompt_ids.to_vec() };
+
     let mut h = vec![0.0f32; model.hidden_dim];
-    let mut current_id = token_to_id.get("\n").copied().unwrap_or(0);
-    let mut rng = rand::rng();
-    let mut out_tokens: Vec<String> = Vec::with_capacity(length);
+    let mut out_tokens: Vec<String> = Vec::with_capacity(seed_ids.len() + length);
+    let mut last_probs = vec![0.0f32; model.vocab_size];
+
+    // "Read" the seed: advance the hidden state through it token by token.
+    // This is mechanically exactly what prompting is — the model's state
+    // after the last prompt token IS its distribution over what comes
+    // next, the same math as training, just with no target/loss.
+    for &id in &seed_ids {
+        out_tokens.push(vocab[id].clone());
+        let out = model.step(id, &h);
+        h = out.h;
+        last_probs = out.probs;
+    }
 
     for _ in 0..length {
-        let out = model.step(current_id, &h);
-
-        // Sample from the probability distribution rather than always
-        // picking the top choice — this is why LLM output isn't identical
-        // every time even for the same prompt.
+        // Sample rather than always taking the top choice — this
+        // (temperature sampling) is the actual, sole source of "not the
+        // same twice." The forward pass is a pure function of the
+        // weights; only this draw is random, and only when `seed` is None.
         let mut r: f32 = rng.random();
         let mut chosen_id = 0;
-        for (j, &p) in out.probs.iter().enumerate() {
+        for (j, &p) in last_probs.iter().enumerate() {
             r -= p;
             if r <= 0.0 {
                 chosen_id = j;
@@ -634,8 +680,9 @@ fn generate(model: &Model, vocab: &[String], token_to_id: &HashMap<String, usize
         }
 
         out_tokens.push(vocab[chosen_id].clone());
+        let out = model.step(chosen_id, &h);
         h = out.h;
-        current_id = chosen_id; // <-- the model's own output becomes its next input
+        last_probs = out.probs; // <-- the model's own output becomes its next input
     }
 
     detokenize(&out_tokens)
@@ -848,9 +895,15 @@ fn main() {
     }
 
     // ---------- 6. Generation ----------
+    let prompt_ids: Vec<usize> = match &cli.prompt {
+        Some(text) => tokenize(text).iter().map(|t| token_to_id.get(t.as_str()).copied().unwrap_or(0)).collect(),
+        None => Vec::new(),
+    };
+
     println!("\n--- Generated text ---");
-    for _ in 0..3 {
-        println!("{}\n---", generate(&model, &vocab, &token_to_id, cli.length));
+    for i in 0..3u64 {
+        let sample_seed = cli.seed.map(|s| s.wrapping_add(i));
+        println!("{}\n---", generate(&model, &vocab, &token_to_id, &prompt_ids, cli.length, sample_seed));
     }
 }
 
