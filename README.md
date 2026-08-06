@@ -11,9 +11,9 @@ The source is a few focused files, each a self-contained chapter:
 | File | Lines | What's in it |
 |---|---|---|
 | [`tokenizer.rs`](src/tokenizer.rs) | ~90 | Text ↔ tokens, and the vocabulary built from them |
-| [`model.rs`](src/model.rs) | ~550 | The GRU itself: forward pass, real backprop-through-time, checkpointing, and the gradient-check test that proves the hand-derived backward pass is correct |
+| [`model.rs`](src/model.rs) | ~650 | The GRU itself: forward pass, real backprop-through-time, the Adam optimizer, checkpointing, and the gradient-check test that proves the hand-derived backward pass is correct |
 | [`generate.rs`](src/generate.rs) | ~145 | Autoregressive sampling from a trained model |
-| [`main.rs`](src/main.rs) | ~440 | CLI + orchestration — parses args, calls into the three files above, prints results |
+| [`main.rs`](src/main.rs) | ~530 | CLI + orchestration — parses args, calls into the three files above, runs the post-training sanity check, prints results |
 
 `model.rs` is where the actual "how does it learn" story lives, including
 the architecture write-up below. The other three are supporting cast.
@@ -133,13 +133,51 @@ as a *single* weight update, once, on the main thread. Because the
 parallel phase never mutates shared state, this needs zero locks and zero
 `unsafe` code.
 
+**Optimizer** is Adam ([Kingma & Ba, 2014][adam]), not plain SGD. Once a
+gradient is computed, *applying* it isn't just "subtract gradient × learning
+rate" — Adam keeps a running mean (`m`) and running variance (`v`) of each
+individual parameter's own gradient history, and uses them to give every
+parameter its own effective step size: one with a small, noisy gradient
+(a rarely-seen word's embedding) gets a comparatively bigger step; one
+with a large, consistent gradient gets a smaller one. This is *not* a new
+architecture — the GRU, the forward pass, and the backprop math above are
+completely untouched, only how the resulting gradients get used to move
+the weights changed. In practice it converges to a good result in
+meaningfully fewer epochs than plain SGD needed: retraining macbeth from
+scratch, SGD took 78 epochs to reach loss 7.81 and still failed the
+sanity check below; Adam reached loss 6.05 in 30 epochs and passed
+cleanly. `--lr`'s default (0.003) is tuned for Adam, not SGD — expect to
+need a value roughly 10-30x smaller than you would for plain gradient
+descent, since Adam already rescales each step internally.
+
+[adam]: https://arxiv.org/abs/1412.6980
+
+**Sanity check.** No formula reliably predicts how many epochs a given
+corpus actually needs — it depends on the corpus's own repetitiveness,
+not just its size or vocabulary. So instead of predicting, every training
+run ends with a direct measurement: take the corpus's own most frequent
+real words, generate a sample from the model's raw distribution, and
+check whether those words show up at anywhere close to their real rate.
+A model that hasn't trained long enough systematically underuses even
+the most common words in the language — regardless of what caused the
+undertraining — which is a much stronger signal than "does the output
+look like real words," and catches models that would otherwise look
+deceptively fine (real vocabulary, real character names) while still
+being fundamentally undercooked. A failing check exits with status 2
+specifically so scripts can act on it — see
+[`scripts/retrain_all.sh`](scripts/retrain_all.sh), which resumes
+training with more epochs automatically until it passes, rather than
+accepting "the process didn't crash" as good enough.
+
 **Correctness.** BPTT-by-hand is exactly the kind of code that's easy to
 get subtly wrong. `model.rs` includes a `#[test]` that numerically
 verifies every analytic gradient against finite differences (perturb a
 weight by ±ε, compare `(loss(w+ε) - loss(w-ε)) / 2ε` to the hand-derived
 gradient) — the same technique the very first version of this file used
 *as its training method*, now repurposed as a correctness check on the
-real thing. Run it with `cargo test -- --nocapture`.
+real thing. Run it with `cargo test -- --nocapture`. (This verifies the
+gradients themselves, which Adam doesn't touch — only how they're
+*applied* to the weights changed, not how they're computed.)
 
 **Generation** is autoregressive: feed in a token, get a probability
 distribution over the next one, sample from it (not just take the top
@@ -175,7 +213,7 @@ the result. Useful flags:
 |---|---|---|
 | `-d, --data-set <path>` | `training-data.txt` | Text file to train on |
 | `-e, --epochs <n>` | 10 | Full passes over the data |
-| `--lr <n>` | 0.1 | Peak learning rate (cosine-decays to 10% of this by the last epoch) |
+| `--lr <n>` | 0.003 | Peak Adam learning rate (cosine-decays to 10% of this by the last epoch) |
 | `--vocab-size <n>` | 8000 | Max distinct tokens; rest collapse to `<unk>` |
 | `--embed-dim <n>` | 16 | Size of each token's learned embedding |
 | `--hidden-dim <n>` | 96 | Size of the GRU's hidden state (memory capacity) |
@@ -223,6 +261,13 @@ unusually word-salady even by this project's standards, `--analyze` a
 model you're unsure about and compare against how many epochs it actually
 got.
 
+Treat `--analyze`'s suggestion as a reasonable *starting point*, not the
+final word — it's still a prediction, and the sanity check above is the
+actual authority on whether a given run converged. That's why the
+pretrained models below weren't trained for `--analyze`'s suggested
+epoch count directly; they were trained in chunks until the sanity check
+actually passed (see `scripts/retrain_all.sh`).
+
 ## 4. How you use a model
 
 Skip training entirely and generate from a saved checkpoint:
@@ -240,8 +285,10 @@ are resumable.
 
 Pretrained checkpoints in [`models/`](models/), one per corpus in
 [`corpora/`](corpora/). All trained at `vocab_size=8000`/`hidden_dim=96`
-(or full corpus vocab where the corpus has fewer unique words than that),
-epoch count chosen per-corpus via `--analyze`:
+(or full corpus vocab where the corpus has fewer unique words than that)
+with Adam, via [`scripts/retrain_all.sh`](scripts/retrain_all.sh) — epoch
+count per corpus wasn't predicted in advance, it's however many
+20-epoch training passes it actually took to pass the sanity check above:
 
 | Model | Trained on |
 |---|---|
