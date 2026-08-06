@@ -148,6 +148,8 @@ the result. Useful flags:
 | `--max-chars <n>` | — | Truncate input to the first N characters |
 | `--save-model <path>` | — | Where to write the trained checkpoint |
 | `-l, --length <n>` | 80 | Tokens to generate per sample, after training |
+| `--prompt <text>` | — | Seed generation with this text instead of a bare newline |
+| `--seed <n>` | — | Seed the sampling RNG for reproducible output (omit for fresh randomness each run) |
 | `--analyze` | off | Don't train — measure and estimate instead (see below) |
 
 **Before committing to a long run**, use `--analyze`:
