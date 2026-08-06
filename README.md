@@ -1,11 +1,22 @@
 # TinyLM
 
-A genuinely tiny language model, in one readable Rust file (`src/main.rs`) —
-built to show the actual mechanics of how these things learn, not just call
-an API. Real tokenization, real embeddings, real backprop, real
-backprop-*through-time*. No autodiff library, no ML framework — every
-gradient is hand-derived and hand-coded so you can read the whole training
-loop and believe it.
+A genuinely tiny language model, in readable Rust — built to show the
+actual mechanics of how these things learn, not just call an API. Real
+tokenization, real embeddings, real backprop, real backprop-*through-time*.
+No autodiff library, no ML framework — every gradient is hand-derived and
+hand-coded so you can read the whole training loop and believe it.
+
+The source is a few focused files, each a self-contained chapter:
+
+| File | Lines | What's in it |
+|---|---|---|
+| [`src/tokenizer.rs`](src/tokenizer.rs) | ~90 | Text ↔ tokens, and the vocabulary built from them |
+| [`src/model.rs`](src/model.rs) | ~550 | The GRU itself: forward pass, real backprop-through-time, checkpointing, and the gradient-check test that proves the hand-derived backward pass is correct |
+| [`src/generate.rs`](src/generate.rs) | ~145 | Autoregressive sampling from a trained model |
+| [`src/main.rs`](src/main.rs) | ~440 | CLI + orchestration — parses args, calls into the three files above, prints results |
+
+`model.rs` is where the actual "how does it learn" story lives, including
+the architecture write-up below. The other three are supporting cast.
 
 It will never write a real sonnet. It's small on purpose. But it will
 learn actual words, actual character names, and actual local phrasing from
@@ -38,7 +49,7 @@ and The Real Mother Goose. Pretrained models for all of these live in
 
 ### Evolution of this project
 
-This file has gone through three architectures, each fixing a real
+This project has gone through three architectures, each fixing a real
 limitation of the last:
 
 1. **Character-level, no context.** Predicted the next *character* from
@@ -65,7 +76,7 @@ limitation of the last:
 own token. `\n` becomes its own token too, on purpose — it's the closest
 thing to verse/paragraph structure the model can learn.
 
-**Vocabulary.** The `N` most frequent tokens are kept (default 3000);
+**Vocabulary.** The `N` most frequent tokens are kept (default 8000);
 everything else collapses to `<unk>`. Real text vocabularies follow a
 Zipf distribution — a small set of tokens covers most of the corpus — so
 this bounds the (expensive) output layer without losing much coverage.
@@ -123,7 +134,7 @@ parallel phase never mutates shared state, this needs zero locks and zero
 `unsafe` code.
 
 **Correctness.** BPTT-by-hand is exactly the kind of code that's easy to
-get subtly wrong. `src/main.rs` includes a `#[test]` that numerically
+get subtly wrong. `src/model.rs` includes a `#[test]` that numerically
 verifies every analytic gradient against finite differences (perturb a
 weight by ±ε, compare `(loss(w+ε) - loss(w-ε)) / 2ε` to the hand-derived
 gradient) — the same technique the very first version of this file used
@@ -139,7 +150,7 @@ the hidden state for as long as you keep generating — no length cap.
 ### Why it can't write real Shakespeare
 
 This is a real architectural ceiling, not a training-time problem. A
-model this size (default: 16-dim embeddings, 48-dim hidden state, 3000-
+model this size (default: 16-dim embeddings, 96-dim hidden state, 8000-
 token vocabulary) has nowhere near the capacity to model English syntax —
 it can pick up local statistical patterns (which words tend to follow
 which, common short phrases, character names, where lines tend to break)
@@ -164,18 +175,24 @@ the result. Useful flags:
 |---|---|---|
 | `-d, --data-set <path>` | `training-data.txt` | Text file to train on |
 | `-e, --epochs <n>` | 10 | Full passes over the data |
-| `--lr <n>` | 0.1 | Learning rate (step size per update) |
-| `--vocab-size <n>` | 3000 | Max distinct tokens; rest collapse to `<unk>` |
+| `--lr <n>` | 0.1 | Peak learning rate (cosine-decays to 10% of this by the last epoch) |
+| `--vocab-size <n>` | 8000 | Max distinct tokens; rest collapse to `<unk>` |
 | `--embed-dim <n>` | 16 | Size of each token's learned embedding |
-| `--hidden-dim <n>` | 48 | Size of the GRU's hidden state (memory capacity) |
+| `--hidden-dim <n>` | 96 | Size of the GRU's hidden state (memory capacity) |
 | `--seq-len <n>` | 25 | Truncated-BPTT window: how far back gradients flow |
 | `-b, --batch-size <n>` | 512 | Sequences per parallel mini-batch |
 | `--max-chars <n>` | — | Truncate input to the first N characters |
+| `--load-model <path>` | — | Resume from a checkpoint instead of random init (see [How you use a model](#4-how-you-use-a-model)) |
 | `--save-model <path>` | — | Where to write the trained checkpoint |
+| `--checkpoint-every <n>` | — | Also save every N epochs during training, not just at the end — real crash-safety for long runs |
 | `-l, --length <n>` | 80 | Tokens to generate per sample, after training |
 | `--prompt <text>` | — | Seed generation with this text instead of a bare newline |
 | `--seed <n>` | — | Seed the sampling RNG for reproducible output (omit for fresh randomness each run) |
+| `--temperature <n>` | 1.0 | <1 sharpens toward likely tokens, >1 flattens toward uniform |
+| `--top-k <n>` | — | Restrict sampling to the K most probable tokens each step |
+| `--top-p <n>` | — | Nucleus sampling: restrict to the smallest set covering probability mass `n` |
 | `--analyze` | off | Don't train — measure and estimate instead (see below) |
+| `--diagnose-saturation` | off | Don't train/generate — report how saturated the model's gates are on real data |
 
 **Before committing to a long run**, use `--analyze`:
 
@@ -186,12 +203,25 @@ the result. Useful flags:
 This runs a handful of *real* gradient-computation batches — your data,
 your hyperparameters, this machine — through the exact same parallel code
 path training uses, times them, and extrapolates: a suggested `--epochs`
-(targeting a ~2M-token-exposure budget across all epochs, floored at 15
-so huge corpora aren't starved, capped at 400 so tiny corpora don't run
-forever), an estimated per-epoch and total training time, and a
-ready-to-run command. It's a live measurement, not a canned formula — it
-stays honest even if you change `--hidden-dim`, `--batch-size`, or run it
-on different hardware.
+(targeting a ~2M-token-exposure budget across all epochs, floored at
+`vocab_size / 200` so a bigger output layer — more classes to calibrate —
+gets proportionally more epochs instead of being starved, capped at 400 so
+tiny corpora don't run forever), an estimated per-epoch and total training
+time, and a ready-to-run command. It's a live measurement, not a canned
+formula — it stays honest even if you change `--hidden-dim`,
+`--batch-size`, or run it on different hardware.
+
+That vocab-scaled floor exists because of a real bug we hit and fixed:
+the original flat floor of 15 epochs undertrained every corpus with a
+large vocabulary — confirmed directly by comparing two runs where the
+*larger*-vocab corpus got *more* total token exposure yet converged to a
+much smaller fraction of the distance off its random-guessing baseline.
+Symptom in practice: generated text nearly missing the most common words
+in the language (`the`, `a`, `and`) because the model hadn't trained long
+enough to learn even basic frequency statistics. If output reads as
+unusually word-salady even by this project's standards, `--analyze` a
+model you're unsure about and compare against how many epochs it actually
+got.
 
 ## 4. How you use a model
 
@@ -209,7 +239,9 @@ number) to keep training the loaded model further instead — checkpoints
 are resumable.
 
 Pretrained checkpoints in [`models/`](models/), one per corpus in
-[`corpora/`](corpora/):
+[`corpora/`](corpora/). All trained at `vocab_size=8000`/`hidden_dim=96`
+(or full corpus vocab where the corpus has fewer unique words than that),
+epoch count chosen per-corpus via `--analyze`:
 
 | Model | Trained on |
 |---|---|
@@ -249,11 +281,11 @@ network itself.
 **Does this actually qualify as an "LLM"? Does "large" mean anything
 quantifiable?**
 No official industry-wide cutoff exists, but there's rough consensus,
-and we can just count. This model, at its default hyperparameters (3000
-vocab, 16-dim embeddings, 48-dim hidden state), has **~204,000
+and we can just count. This model, at its default hyperparameters (8000
+vocab, 16-dim embeddings, 96-dim hidden state), has **~937,000
 parameters**. The smallest models people commonly call "large" (GPT-2
-small, BERT-base) start around 110–125 *million* — roughly **600x more**
-than this whole project. GPT-3 is ~850,000x bigger. Training data tells
+small, BERT-base) start around 110–125 *million* — roughly **130x more**
+than this whole project. GPT-3 is ~187,000x bigger. Training data tells
 the same story: this trains on ~1.2M tokens per corpus; modern LLMs
 train on trillions. So no, this doesn't meet any reasonable quantitative
 bar for "large," and it isn't supposed to — the name is the joke.
@@ -266,6 +298,6 @@ Those are orthogonal — n-gram frequency tables, RNNs, LSTMs, and
 Transformers are all "language models" in the technical sense; it's
 architecture-agnostic terminology. RNN-based ones were literally called
 that in the literature that helped start the whole neural-LM lineage
-this project's header comment traces (Mikolov et al., 2010, *"Recurrent
+`model.rs`'s header comment traces (Mikolov et al., 2010, *"Recurrent
 neural network based language model"*). So: a genuine, legitimate
 (recurrent) neural language model — just not a large one.
