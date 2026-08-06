@@ -10,10 +10,10 @@ The source is a few focused files, each a self-contained chapter:
 
 | File | Lines | What's in it |
 |---|---|---|
-| [`src/tokenizer.rs`](src/tokenizer.rs) | ~90 | Text ↔ tokens, and the vocabulary built from them |
-| [`src/model.rs`](src/model.rs) | ~550 | The GRU itself: forward pass, real backprop-through-time, checkpointing, and the gradient-check test that proves the hand-derived backward pass is correct |
-| [`src/generate.rs`](src/generate.rs) | ~145 | Autoregressive sampling from a trained model |
-| [`src/main.rs`](src/main.rs) | ~440 | CLI + orchestration — parses args, calls into the three files above, prints results |
+| [`tokenizer.rs`](src/tokenizer.rs) | ~90 | Text ↔ tokens, and the vocabulary built from them |
+| [`model.rs`](src/model.rs) | ~550 | The GRU itself: forward pass, real backprop-through-time, checkpointing, and the gradient-check test that proves the hand-derived backward pass is correct |
+| [`generate.rs`](src/generate.rs) | ~145 | Autoregressive sampling from a trained model |
+| [`main.rs`](src/main.rs) | ~440 | CLI + orchestration — parses args, calls into the three files above, prints results |
 
 `model.rs` is where the actual "how does it learn" story lives, including
 the architecture write-up below. The other three are supporting cast.
@@ -134,7 +134,7 @@ parallel phase never mutates shared state, this needs zero locks and zero
 `unsafe` code.
 
 **Correctness.** BPTT-by-hand is exactly the kind of code that's easy to
-get subtly wrong. `src/model.rs` includes a `#[test]` that numerically
+get subtly wrong. `model.rs` includes a `#[test]` that numerically
 verifies every analytic gradient against finite differences (perturb a
 weight by ±ε, compare `(loss(w+ε) - loss(w-ε)) / 2ε` to the hand-derived
 gradient) — the same technique the very first version of this file used
