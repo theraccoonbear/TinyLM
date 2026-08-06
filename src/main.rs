@@ -126,6 +126,14 @@ struct Cli {
     /// fresh randomness every run (the default).
     #[arg(long)]
     seed: Option<u64>,
+
+    /// Don't train or generate — run the (trained or loaded) model forward
+    /// over real data and report the actual distribution of gate
+    /// pre-activation values (what goes INTO sigmoid, not what comes out),
+    /// so "how close to saturated is this model" is a measurement instead
+    /// of a guess.
+    #[arg(long)]
+    diagnose_saturation: bool,
 }
 
 // ---------- Tokenizer ----------
@@ -473,6 +481,25 @@ impl Model {
         let _ = vocab_size;
 
         StepOut { z, r, hcand, h, probs }
+    }
+
+    // Diagnostic only: recompute just the two gates' pre-activation values
+    // (what feeds INTO sigmoid, before it gets squashed) without running
+    // the rest of a step. Not used by training or generation — exists so
+    // --diagnose-saturation can report real numbers instead of a guess.
+    fn gate_preactivations(&self, tok: usize, h_prev: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let embed_dim = self.embed_dim;
+        let x = &self.embedding[tok * embed_dim..tok * embed_dim + embed_dim];
+
+        let mut az = self.b_z.clone();
+        linear_forward(&self.w_z, x, &mut az);
+        linear_forward(&self.u_z, h_prev, &mut az);
+
+        let mut ar = self.b_r.clone();
+        linear_forward(&self.w_r, x, &mut ar);
+        linear_forward(&self.u_r, h_prev, &mut ar);
+
+        (az, ar)
     }
 
     // ---------- Loss + backprop-through-time ----------
@@ -892,6 +919,46 @@ fn main() {
     if let Some(save_path) = &cli.save_model {
         save_checkpoint(save_path, &model, &vocab).expect("failed to save model checkpoint");
         println!("Saved model to {}", save_path.display());
+    }
+
+    // ---------- 5b. --diagnose-saturation: measure, don't generate ----------
+    if cli.diagnose_saturation {
+        let sample_len = ids.len().min(20_000);
+        if sample_len == 0 {
+            println!("No tokens to diagnose against.");
+            return;
+        }
+        let mut h = vec![0.0f32; model.hidden_dim];
+        let mut az_all: Vec<f32> = Vec::with_capacity(sample_len * model.hidden_dim);
+        let mut ar_all: Vec<f32> = Vec::with_capacity(sample_len * model.hidden_dim);
+        for &tok in &ids[..sample_len] {
+            let (az, ar) = model.gate_preactivations(tok, &h);
+            az_all.extend_from_slice(&az);
+            ar_all.extend_from_slice(&ar);
+            h = model.step(tok, &h).h; // advance state exactly as generation/inference would
+        }
+
+        fn report(name: &str, values: &[f32]) {
+            let n = values.len() as f64;
+            let mean = values.iter().map(|&v| v as f64).sum::<f64>() / n;
+            let var = values.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n;
+            let std = var.sqrt();
+            let min = values.iter().copied().fold(f32::INFINITY, f32::min);
+            let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let pct_beyond = |t: f32| values.iter().filter(|&&v| v.abs() > t).count() as f64 / n * 100.0;
+            println!(
+                "{name}: n={} mean={mean:.3} std={std:.3} range=[{min:.3}, {max:.3}]\n  fraction with |x| beyond: >2 = {:.3}%   >4 = {:.3}%   >6 = {:.3}%",
+                values.len(),
+                pct_beyond(2.0),
+                pct_beyond(4.0),
+                pct_beyond(6.0)
+            );
+        }
+
+        println!("\n--- Gate pre-activation distribution over {sample_len} real tokens ---");
+        report("update gate (az, feeds sigmoid)", &az_all);
+        report("reset gate  (ar, feeds sigmoid)", &ar_all);
+        return;
     }
 
     // ---------- 6. Generation ----------
