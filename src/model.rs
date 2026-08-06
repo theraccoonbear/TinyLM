@@ -160,6 +160,78 @@ impl Grad {
     }
 }
 
+// Adam's per-parameter memory: a running estimate of each parameter's
+// gradient mean (m) and gradient variance (v), same shape as Grad. Plain
+// SGD takes the same-size step for every parameter, scaled only by the
+// gradient itself. Adam divides that step by (roughly) the parameter's
+// own recent gradient variability — a parameter with small, noisy
+// gradients gets a comparatively bigger effective step; a parameter with
+// large, consistent gradients gets a smaller one. In practice this
+// reaches a given loss in meaningfully fewer epochs than plain SGD,
+// which is why it's the standard choice for training almost everything
+// today. It's ephemeral optimizer state, not part of the model — it
+// lives only for the duration of one training run and is never written
+// to a checkpoint (only the trained weights are).
+pub struct AdamState {
+    m_embedding: Vec<f32>,
+    v_embedding: Vec<f32>,
+    m_w_z: Vec<f32>,
+    v_w_z: Vec<f32>,
+    m_w_r: Vec<f32>,
+    v_w_r: Vec<f32>,
+    m_w_h: Vec<f32>,
+    v_w_h: Vec<f32>,
+    m_u_z: Vec<f32>,
+    v_u_z: Vec<f32>,
+    m_u_r: Vec<f32>,
+    v_u_r: Vec<f32>,
+    m_u_h: Vec<f32>,
+    v_u_h: Vec<f32>,
+    m_b_z: Vec<f32>,
+    v_b_z: Vec<f32>,
+    m_b_r: Vec<f32>,
+    v_b_r: Vec<f32>,
+    m_b_h: Vec<f32>,
+    v_b_h: Vec<f32>,
+    m_w_out: Vec<f32>,
+    v_w_out: Vec<f32>,
+    m_b_out: Vec<f32>,
+    v_b_out: Vec<f32>,
+    t: usize, // global step count, across every batch of the whole run — for bias correction
+}
+
+impl AdamState {
+    pub fn new(vocab_size: usize, embed_dim: usize, hidden_dim: usize) -> Self {
+        AdamState {
+            m_embedding: vec![0.0; vocab_size * embed_dim],
+            v_embedding: vec![0.0; vocab_size * embed_dim],
+            m_w_z: vec![0.0; embed_dim * hidden_dim],
+            v_w_z: vec![0.0; embed_dim * hidden_dim],
+            m_w_r: vec![0.0; embed_dim * hidden_dim],
+            v_w_r: vec![0.0; embed_dim * hidden_dim],
+            m_w_h: vec![0.0; embed_dim * hidden_dim],
+            v_w_h: vec![0.0; embed_dim * hidden_dim],
+            m_u_z: vec![0.0; hidden_dim * hidden_dim],
+            v_u_z: vec![0.0; hidden_dim * hidden_dim],
+            m_u_r: vec![0.0; hidden_dim * hidden_dim],
+            v_u_r: vec![0.0; hidden_dim * hidden_dim],
+            m_u_h: vec![0.0; hidden_dim * hidden_dim],
+            v_u_h: vec![0.0; hidden_dim * hidden_dim],
+            m_b_z: vec![0.0; hidden_dim],
+            v_b_z: vec![0.0; hidden_dim],
+            m_b_r: vec![0.0; hidden_dim],
+            v_b_r: vec![0.0; hidden_dim],
+            m_b_h: vec![0.0; hidden_dim],
+            v_b_h: vec![0.0; hidden_dim],
+            m_w_out: vec![0.0; hidden_dim * vocab_size],
+            v_w_out: vec![0.0; hidden_dim * vocab_size],
+            m_b_out: vec![0.0; vocab_size],
+            v_b_out: vec![0.0; vocab_size],
+            t: 0,
+        }
+    }
+}
+
 // A trained model plus everything needed to make its token ids meaningful
 // again later — this whole struct is exactly what "saving the model" means.
 // Note there's no seq_len here: that's a training-time BPTT truncation
@@ -437,29 +509,59 @@ impl Model {
         grad
     }
 
-    // Apply one averaged update from a batch's accumulated gradients —
-    // same "move opposite the gradient" rule as plain SGD, amortized over
-    // batch_len examples instead of one.
-    pub fn apply_gradients(&mut self, grad: &Grad, learning_rate: f32, batch_len: usize) {
-        let scale = learning_rate / batch_len as f32;
-        macro_rules! apply_all {
-            ($(($field:ident, $dfield:ident)),+) => {
-                $(for (p, g) in self.$field.iter_mut().zip(&grad.$dfield) { *p -= scale * g; })+
+    // Apply one averaged update from a batch's accumulated gradients,
+    // using Adam instead of plain SGD's flat "move opposite the gradient"
+    // rule. Per parameter, per step:
+    //
+    //   m = beta1*m + (1-beta1)*g          running mean of the gradient
+    //   v = beta2*v + (1-beta2)*g^2        running mean of the gradient^2
+    //   m_hat = m / (1 - beta1^t)          bias-corrected (m,v start at 0,
+    //   v_hat = v / (1 - beta2^t)          which biases early estimates toward 0)
+    //   param -= lr * m_hat / (sqrt(v_hat) + eps)
+    //
+    // The division by sqrt(v_hat) is the actual mechanism: a parameter
+    // whose gradient has been consistently large gets a smaller effective
+    // step (it's already moving fast); one whose gradient is small/rare
+    // gets a comparatively larger one. beta1/beta2/eps are the standard
+    // values from the original paper (Kingma & Ba, 2014) — stable enough
+    // that they're rarely tuned in practice.
+    pub fn apply_gradients(&mut self, grad: &Grad, adam: &mut AdamState, learning_rate: f32, batch_len: usize) {
+        const BETA1: f32 = 0.9;
+        const BETA2: f32 = 0.999;
+        const EPS: f32 = 1e-8;
+
+        adam.t += 1;
+        let bias_correction1 = 1.0 - BETA1.powi(adam.t as i32);
+        let bias_correction2 = 1.0 - BETA2.powi(adam.t as i32);
+        let batch_scale = 1.0 / batch_len as f32;
+
+        macro_rules! adam_update {
+            ($(($field:ident, $dfield:ident, $mfield:ident, $vfield:ident)),+) => {
+                $(
+                    for i in 0..self.$field.len() {
+                        let g = grad.$dfield[i] * batch_scale;
+                        adam.$mfield[i] = BETA1 * adam.$mfield[i] + (1.0 - BETA1) * g;
+                        adam.$vfield[i] = BETA2 * adam.$vfield[i] + (1.0 - BETA2) * g * g;
+                        let m_hat = adam.$mfield[i] / bias_correction1;
+                        let v_hat = adam.$vfield[i] / bias_correction2;
+                        self.$field[i] -= learning_rate * m_hat / (v_hat.sqrt() + EPS);
+                    }
+                )+
             };
         }
-        apply_all!(
-            (embedding, d_embedding),
-            (w_z, d_w_z),
-            (w_r, d_w_r),
-            (w_h, d_w_h),
-            (u_z, d_u_z),
-            (u_r, d_u_r),
-            (u_h, d_u_h),
-            (b_z, d_b_z),
-            (b_r, d_b_r),
-            (b_h, d_b_h),
-            (w_out, d_w_out),
-            (b_out, d_b_out)
+        adam_update!(
+            (embedding, d_embedding, m_embedding, v_embedding),
+            (w_z, d_w_z, m_w_z, v_w_z),
+            (w_r, d_w_r, m_w_r, v_w_r),
+            (w_h, d_w_h, m_w_h, v_w_h),
+            (u_z, d_u_z, m_u_z, v_u_z),
+            (u_r, d_u_r, m_u_r, v_u_r),
+            (u_h, d_u_h, m_u_h, v_u_h),
+            (b_z, d_b_z, m_b_z, v_b_z),
+            (b_r, d_b_r, m_b_r, v_b_r),
+            (b_h, d_b_h, m_b_h, v_b_h),
+            (w_out, d_w_out, m_w_out, v_w_out),
+            (b_out, d_b_out, m_b_out, v_b_out)
         );
     }
 }

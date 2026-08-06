@@ -28,7 +28,7 @@ use rand::seq::SliceRandom;
 use rayon::prelude::*;
 
 use generate::{generate, SamplingConfig};
-use model::{load_checkpoint, save_checkpoint, Grad, Model};
+use model::{load_checkpoint, save_checkpoint, AdamState, Grad, Model};
 use tokenizer::{build_vocab, tokenize};
 
 /// A genuinely tiny word-level language model with a GRU memory, trained via real backprop.
@@ -43,8 +43,12 @@ struct Cli {
     #[arg(short = 'e', long, default_value_t = 10)]
     epochs: usize,
 
-    /// Learning rate
-    #[arg(long, default_value_t = 0.1)]
+    /// Peak learning rate (Adam). Note: this is an Adam learning rate, not
+    /// a plain-SGD one -- an order of magnitude or more smaller than you'd
+    /// use for SGD, because Adam already rescales each parameter's step by
+    /// its own recent gradient variance. Cosine-decays to 10% of this by
+    /// the last epoch.
+    #[arg(long, default_value_t = 0.003)]
     lr: f32,
 
     /// Tokens to generate per sample
@@ -319,6 +323,7 @@ fn main() {
 
         let mut order: Vec<usize> = (0..num_examples).collect();
         let mut rng = rand::rng();
+        let mut adam = AdamState::new(vocab_size, embed_dim, hidden_dim);
 
         let start_time = Instant::now();
         for epoch in 0..cli.epochs {
@@ -351,7 +356,7 @@ fn main() {
                     );
 
                 total_loss += grad.loss;
-                model.apply_gradients(&grad, lr, batch_starts.len() * seq_len);
+                model.apply_gradients(&grad, &mut adam, lr, batch_starts.len() * seq_len);
             }
 
             let report_every = (cli.epochs / 20).max(1);
