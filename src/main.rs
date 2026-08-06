@@ -417,6 +417,21 @@ fn main() {
         return;
     }
 
+    // ---------- 5c. Sanity check: does it actually know common words are common? ----------
+    // Runs automatically, every time, whether the model was just trained or
+    // just loaded — no manual re-derivation required. This exists because
+    // no *predictive* formula (token budget, vocab-scaled floor, whatever)
+    // reliably catches undertraining: it can depend on the corpus's own
+    // repetitiveness, not just its size or vocabulary, and that's not
+    // something you can know in advance. So instead of predicting, this
+    // measures the actual outcome directly: take the corpus's own most
+    // frequent real words, generate a sample from the model's raw
+    // distribution, and check whether those words show up at anywhere
+    // close to their real rate. A model that hasn't trained long enough
+    // systematically underuses even the most common words in the
+    // language, regardless of what caused the undertraining.
+    check_frequency_sanity(&tokens_all, &model, &vocab, &token_to_id);
+
     // ---------- 6. Generation ----------
     let prompt_ids: Vec<usize> = match &cli.prompt {
         Some(text) => tokenize(text).iter().map(|t| token_to_id.get(t.as_str()).copied().unwrap_or(0)).collect(),
@@ -432,5 +447,65 @@ fn main() {
             "{}\n---",
             generate(&model, &vocab, &token_to_id, &prompt_ids, cli.length, sample_seed, sampling)
         );
+    }
+}
+
+// Picks the corpus's most frequent real word tokens (skips punctuation/
+// newline/<unk> — this is about ordinary word frequency, not
+// punctuation), generates a sample from the model's own raw distribution
+// (temperature 1.0, no top-k/top-p — measuring the model's honest
+// statistics, not whatever the user asked generation to look like), and
+// compares how often those words actually show up against how often they
+// should. Prints a loud warning if the ratio suggests undertraining.
+fn check_frequency_sanity(tokens_all: &[String], model: &Model, vocab: &[String], token_to_id: &HashMap<String, usize>) {
+    let mut freq: HashMap<&str, usize> = HashMap::new();
+    for t in tokens_all {
+        *freq.entry(t.as_str()).or_insert(0) += 1;
+    }
+    let mut ranked: Vec<(&str, usize)> = freq.into_iter().filter(|(t, _)| t.chars().next().is_some_and(|c| c.is_alphabetic())).collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    let sentinels: Vec<(&str, f64)> = ranked.iter().take(8).map(|&(t, c)| (t, c as f64 / tokens_all.len() as f64)).collect();
+    if sentinels.is_empty() || tokens_all.len() < 50 {
+        return; // too little data for this check to mean anything
+    }
+
+    let sample_len = tokens_all.len().min(1500).max(200);
+    let sample = generate(
+        model,
+        vocab,
+        token_to_id,
+        &[],
+        sample_len,
+        None,
+        SamplingConfig { temperature: 1.0, top_k: None, top_p: None },
+    );
+    let sample_tokens = tokenize(&sample);
+    let sample_len_actual = sample_tokens.len().max(1) as f64;
+    let mut sample_freq: HashMap<&str, usize> = HashMap::new();
+    for t in &sample_tokens {
+        *sample_freq.entry(t.as_str()).or_insert(0) += 1;
+    }
+
+    let ratios: Vec<(&str, f64, f64, f64)> = sentinels
+        .iter()
+        .map(|&(tok, expected)| {
+            let observed = *sample_freq.get(tok).unwrap_or(&0) as f64 / sample_len_actual;
+            let ratio = if expected > 0.0 { observed / expected } else { 1.0 };
+            (tok, expected, observed, ratio)
+        })
+        .collect();
+    let avg_ratio: f64 = ratios.iter().map(|&(_, _, _, r)| r).sum::<f64>() / ratios.len() as f64;
+
+    println!("\n--- Sanity check: common-word usage vs. the training corpus ---");
+    for (tok, expected, observed, ratio) in &ratios {
+        println!("  {tok:?}: corpus {:.2}%   generated {:.2}%   ({:.2}x)", expected * 100.0, observed * 100.0, ratio);
+    }
+    if avg_ratio < 0.25 {
+        println!(
+            "⚠ WARNING: the model uses its most common corpus words at only ~{:.0}% of their real rate.\n  That's the signature of undertraining (seen this exact pattern before) — more --epochs is\n  the fix, or --load-model this checkpoint and keep training with --checkpoint-every set.",
+            avg_ratio * 100.0
+        );
+    } else {
+        println!("Looks healthy (avg {:.2}x of real-corpus rate).", avg_ratio);
     }
 }
