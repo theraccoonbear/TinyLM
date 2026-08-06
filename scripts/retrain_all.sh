@@ -4,13 +4,23 @@
 # launched, safe to walk away from.
 #
 # Resumable: each corpus gets a marker file in .retrain-state/ once it
-# finishes successfully; rerunning this script skips anything already
-# done, rather than redoing it.
+# passes; rerunning this script skips anything already done, rather than
+# redoing it.
 #
 # Crash-safe mid-corpus too: each training run checkpoints its own
 # progress periodically (--checkpoint-every), so a hard crash partway
 # through a corpus still leaves a usable, recent model on disk instead
 # of losing everything back to zero for whatever was in flight.
+#
+# Self-correcting: "trained" isn't just "the process exited 0" — tinylm
+# runs an automatic sanity check after every training run (does the
+# model actually use common words at realistic rates?) and exits with
+# status 2 specifically when that check fails. This script watches for
+# exit 2 and automatically resumes training the SAME corpus with more
+# epochs (via --load-model) rather than accepting an undertrained model
+# just because the process didn't crash. No formula reliably predicts
+# how many epochs a given corpus needs — this measures the actual
+# outcome and keeps going until it's real, up to a retry cap.
 #
 # Order is deliberate: cheapest/fastest corpora first, most expensive
 # (shakespeare) last — so if something does stall or fail partway
@@ -38,31 +48,25 @@ if ! cargo build --release; then
 fi
 BIN="./target/release/tinylm"
 
-# name : epochs : checkpoint-every
-# Epoch counts come from `tinylm --data-set corpora/<name>.txt --analyze`
-# runs at the current --vocab-size/--hidden-dim defaults, not guessed.
-# (grimm/sherlock/shakespeare were originally 15/15/15 from --analyze's
-# old flat epoch floor, which didn't scale with vocab_size and produced
-# genuinely undertrained models -- see the commit that fixed --analyze's
-# floor formula. Numbers below are post-fix.)
-CORPORA=(
-    "mothergoose:83:10"
-    "alice:51:10"
-    "macbeth:78:10"
-    "grimm:27:3"
-    "sherlock:40:5"
-    "shakespeare:40:1"
-)
+CORPORA=(mothergoose alice macbeth grimm sherlock shakespeare)
+
+# Epochs per attempt, and how many attempts (cumulative, via --load-model)
+# before giving up on a corpus. With Adam this is deliberately a small
+# starting budget, not a per-corpus prediction — the retry loop is the
+# actual mechanism that finds "enough," not this number.
+EPOCHS_PER_ATTEMPT=20
+CHECKPOINT_EVERY=5
+MAX_ATTEMPTS=5
 
 TRAINED=()
 SKIPPED=()
 FAILED=()
 
-for entry in "${CORPORA[@]}"; do
-    IFS=":" read -r name epochs ckpt <<< "$entry"
+for name in "${CORPORA[@]}"; do
     corpus="corpora/$name.txt"
     marker="$STATE_DIR/$name.done"
     log="$LOG_DIR/$name.log"
+    model="models/$name.model"
 
     if [[ -f "$marker" ]]; then
         echo "=== $name: already done (marker found), skipping ==="
@@ -76,18 +80,41 @@ for entry in "${CORPORA[@]}"; do
         continue
     fi
 
-    echo "=== $name: training ($epochs epochs, checkpoint every $ckpt epochs) — log: $log ==="
     start=$(date +%s)
-    if "$BIN" --data-set "$corpus" --epochs "$epochs" \
-        --checkpoint-every "$ckpt" --length 200 \
-        --save-model "models/$name.model" > "$log" 2>&1; then
+    passed=false
+    total_epochs=0
+
+    for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+        total_epochs=$(( total_epochs + EPOCHS_PER_ATTEMPT ))
+        args=(--data-set "$corpus" --epochs "$EPOCHS_PER_ATTEMPT" --checkpoint-every "$CHECKPOINT_EVERY" --length 200 --save-model "$model")
+        if [[ $attempt -gt 1 ]]; then
+            args+=(--load-model "$model")
+        fi
+
+        echo "=== $name: attempt $attempt (+${EPOCHS_PER_ATTEMPT} epochs, ${total_epochs} cumulative) — log: $log ==="
+        "$BIN" "${args[@]}" > "$log" 2>&1
+        exit_code=$?
+
+        if [[ $exit_code -eq 0 ]]; then
+            echo "=== $name: PASSED sanity check after ${total_epochs} epochs (attempt $attempt) ==="
+            passed=true
+            break
+        elif [[ $exit_code -eq 2 ]]; then
+            echo "=== $name: attempt $attempt did not pass the sanity check yet — resuming with more epochs ==="
+            continue
+        else
+            echo "=== $name: attempt $attempt CRASHED (exit $exit_code) — see $log — moving to next corpus ==="
+            break
+        fi
+    done
+
+    elapsed=$(( $(date +%s) - start ))
+    if [[ "$passed" == true ]]; then
         touch "$marker"
-        elapsed=$(( $(date +%s) - start ))
-        echo "=== $name: DONE in ${elapsed}s ==="
-        TRAINED+=("$name (${elapsed}s)")
+        echo "=== $name: DONE in ${elapsed}s (${total_epochs} total epochs) ==="
+        TRAINED+=("$name (${total_epochs}ep, ${elapsed}s)")
     else
-        elapsed=$(( $(date +%s) - start ))
-        echo "=== $name: FAILED after ${elapsed}s — see $log — continuing to next corpus ==="
+        echo "=== $name: FAILED after ${elapsed}s (${total_epochs} epochs attempted) — see $log — continuing to next corpus ==="
         FAILED+=("$name")
     fi
 done
