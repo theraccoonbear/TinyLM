@@ -194,3 +194,53 @@ Pretrained checkpoints in [`models/`](models/), one per corpus in
 | `models/sherlock.model` | The Adventures of Sherlock Holmes |
 | `models/grimm.model` | Grimm's Fairy Tales |
 | `models/mothergoose.model` | The Real Mother Goose (nursery rhymes) |
+
+## FAQ
+
+**Can you prompt it, like a real LLM?**
+Yes — `--prompt "some text"`. Mechanically, prompting means feeding tokens
+through the model first, advancing its hidden state, *without* sampling
+anything yet, then generating from wherever that leaves it. That's
+exactly what `--prompt` does: it runs the prompt through the same
+`step()` function every training step already uses, before the sampling
+loop starts. Omit it and generation seeds from a single invisible
+newline instead, same as before `--prompt` existed.
+
+**Is output ever deterministic, or is "not the same twice" inherent to
+how these models work?**
+Determinism is a *choice*, not a property the model lacks. The forward
+pass (`step()`) has zero randomness — same weights, same input token,
+same hidden state → same output distribution, always. The *only*
+randomness in the whole pipeline is the final sampling draw: which token
+to emit from that distribution. `--seed <n>` fixes that draw, and it's
+verified to work — running the same `--seed` twice produces byte-
+identical output. (If you always took the highest-probability token
+instead of sampling — greedy decoding — output would be 100%
+deterministic with no seed needed at all.) Real LLM APIs work the same
+way under the hood; "AI is unpredictable" is really describing the
+sampling policy (temperature), not some inherent unpredictability in the
+network itself.
+
+**Does this actually qualify as an "LLM"? Does "large" mean anything
+quantifiable?**
+No official industry-wide cutoff exists, but there's rough consensus,
+and we can just count. This model, at its default hyperparameters (3000
+vocab, 16-dim embeddings, 48-dim hidden state), has **~204,000
+parameters**. The smallest models people commonly call "large" (GPT-2
+small, BERT-base) start around 110–125 *million* — roughly **600x more**
+than this whole project. GPT-3 is ~850,000x bigger. Training data tells
+the same story: this trains on ~1.2M tokens per corpus; modern LLMs
+train on trillions. So no, this doesn't meet any reasonable quantitative
+bar for "large," and it isn't supposed to — the name is the joke.
+
+**Is it a real language model, or "just" an RNN?**
+Both, not either/or. "RNN" names the *mechanism* (a recurrent hidden
+state); "language model" names the *task* (assign a probability
+distribution to "what token comes next, given everything before it").
+Those are orthogonal — n-gram frequency tables, RNNs, LSTMs, and
+Transformers are all "language models" in the technical sense; it's
+architecture-agnostic terminology. RNN-based ones were literally called
+that in the literature that helped start the whole neural-LM lineage
+this project's header comment traces (Mikolov et al., 2010, *"Recurrent
+neural network based language model"*). So: a genuine, legitimate
+(recurrent) neural language model — just not a large one.
