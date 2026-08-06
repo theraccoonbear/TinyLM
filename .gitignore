@@ -2,3 +2,4 @@ target/
 .claude/
 .retrain-state/
 .retrain-logs/
+.retrain-state/retrain.lock

@@ -41,6 +41,21 @@ STATE_DIR="$(pwd)/.retrain-state"
 LOG_DIR="$(pwd)/.retrain-logs"
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 
+# Structural guard against exactly the failure mode that cost real wasted
+# time tonight: a second invocation of this script (or a leftover one
+# from an earlier, since-superseded run) launching a training process
+# that fights the current one for CPU, discovered only by manually
+# noticing something looked slow. flock makes a second concurrent run
+# impossible outright instead of relying on remembering to check `ps`
+# correctly every time -- fd 9 is held for the life of this process and
+# released automatically on exit, including on kill/crash.
+LOCKFILE="$STATE_DIR/retrain.lock"
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+    echo "Another retrain_all.sh is already running (lock: $LOCKFILE) — refusing to start a second one." >&2
+    exit 1
+fi
+
 echo "=== Building release binary ==="
 if ! cargo build --release; then
     echo "BUILD FAILED — aborting before touching any models."
