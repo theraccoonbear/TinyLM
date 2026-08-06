@@ -43,11 +43,12 @@ struct Cli {
     #[arg(short = 'e', long, default_value_t = 10)]
     epochs: usize,
 
-    /// Peak learning rate (Adam). Note: this is an Adam learning rate, not
-    /// a plain-SGD one -- an order of magnitude or more smaller than you'd
-    /// use for SGD, because Adam already rescales each parameter's step by
-    /// its own recent gradient variance. Cosine-decays to 10% of this by
-    /// the last epoch.
+    /// Peak learning rate (Adam), cosine-decaying to 10% of this by the last epoch.
+    ///
+    /// This is an Adam learning rate, not a plain-SGD one -- an order of
+    /// magnitude or more smaller than you'd use for SGD, because Adam
+    /// already rescales each parameter's step by its own recent gradient
+    /// variance.
     #[arg(long, default_value_t = 0.003)]
     lr: f32,
 
@@ -59,8 +60,9 @@ struct Cli {
     #[arg(long, value_name = "N")]
     max_chars: Option<usize>,
 
-    /// Vocabulary size cap: keeps the N most frequent tokens, everything
-    /// else collapses to <unk>. Bounds the (expensive) output layer.
+    /// Vocabulary size cap (top-N frequent tokens kept; rest become <unk>).
+    ///
+    /// Bounds the (expensive) output layer.
     #[arg(long, default_value_t = 8000)]
     vocab_size: usize,
 
@@ -72,56 +74,65 @@ struct Cli {
     #[arg(long, default_value_t = 96)]
     hidden_dim: usize,
 
-    /// Truncated-BPTT chunk length: how many steps gradients actually flow
-    /// back through. The hidden state itself only ever sees this much
-    /// continuous history during training (it resets to 0 at each chunk
-    /// boundary) — bigger catches longer-range dependencies but costs more
-    /// per example.
+    /// Truncated-BPTT chunk length: how many steps gradients flow back through.
+    ///
+    /// The hidden state itself only ever sees this much continuous history
+    /// during training (it resets to 0 at each chunk boundary) — bigger
+    /// catches longer-range dependencies but costs more per example.
     #[arg(long, default_value_t = 25)]
     seq_len: usize,
 
-    /// Sequences per mini-batch. Each batch's gradients are computed in
-    /// parallel across cores (one sequence's full BPTT per unit of work),
-    /// then applied as one averaged update.
+    /// Sequences per mini-batch.
+    ///
+    /// Each batch's gradients are computed in parallel across cores (one
+    /// sequence's full BPTT per unit of work), then applied as one
+    /// averaged update.
     #[arg(short = 'b', long, default_value_t = 512)]
     batch_size: usize,
 
-    /// Load a previously trained model checkpoint instead of starting from
-    /// random weights. Its vocab/embed_dim/hidden_dim win over the CLI
-    /// flags above (they're baked into the checkpoint).
+    /// Load a previously trained model checkpoint instead of starting from random weights.
+    ///
+    /// Its vocab/embed_dim/hidden_dim win over the CLI flags above
+    /// (they're baked into the checkpoint).
     #[arg(long, value_name = "PATH")]
     load_model: Option<PathBuf>,
 
-    /// Save the trained model to this path after training (or immediately,
-    /// if --load-model was given and --epochs is 0).
+    /// Save the trained model to this path after training.
+    ///
+    /// Or immediately, if --load-model was given and --epochs is 0.
     #[arg(long, value_name = "PATH")]
     save_model: Option<PathBuf>,
 
-    /// Also save (overwriting the same --save-model path) every N epochs
-    /// during training, not just at the end. Real crash-safety for long
+    /// Also checkpoint every N epochs during training, not just at the end.
+    ///
+    /// Overwrites the same --save-model path. Real crash-safety for long
     /// runs: kill the process at epoch 40 of 83 and you still have epoch
     /// 40's weights on disk, not nothing.
     #[arg(long, value_name = "N")]
     checkpoint_every: Option<usize>,
 
-    /// Don't train — measure real gradient-computation throughput on one
-    /// actual batch (your data, your hardware, your hyperparameters), then
-    /// print a suggested --epochs and an estimated total training time.
-    /// Replaces hand-fit constants from someone else's run with a live
-    /// measurement from this one.
+    /// Don't train — measure real throughput, then suggest --epochs and total time.
+    ///
+    /// Measures gradient-computation throughput on one actual batch (your
+    /// data, your hardware, your hyperparameters). Replaces hand-fit
+    /// constants from someone else's run with a live measurement from
+    /// this one.
     #[arg(long)]
     analyze: bool,
 
-    /// Seed generation with this text: the model "reads" it (advancing its
-    /// hidden state one token at a time, same math as training, just
-    /// without a loss) before generating anything new. Echoed in the
-    /// output, so unknown words showing up as <unk> is visible, not
-    /// silent. Omit to start from a single (invisible) newline, as before.
+    /// Seed generation with this text before sampling begins.
+    ///
+    /// The model "reads" it (advancing its hidden state one token at a
+    /// time, same math as training, just without a loss) before
+    /// generating anything new. Echoed in the output, so unknown words
+    /// showing up as <unk> is visible, not silent. Omit to start from a
+    /// single (invisible) newline, as before.
     #[arg(long)]
     prompt: Option<String>,
 
-    /// Seed the RNG used when sampling generated tokens, for reproducible
-    /// output. The forward pass itself is a pure function of the weights —
+    /// Seed the RNG used when sampling, for reproducible output.
+    ///
+    /// The forward pass itself is a pure function of the weights —
     /// sampling is the *only* randomness in generation, so a fixed seed
     /// makes a run fully deterministic. Each of the 3 printed samples
     /// still differs from the others (seed, seed+1, seed+2), but rerunning
@@ -130,29 +141,35 @@ struct Cli {
     #[arg(long)]
     seed: Option<u64>,
 
-    /// Don't train or generate — run the (trained or loaded) model forward
-    /// over real data and report the actual distribution of gate
-    /// pre-activation values (what goes INTO sigmoid, not what comes out),
-    /// so "how close to saturated is this model" is a measurement instead
-    /// of a guess.
+    /// Don't train or generate — report GRU gate pre-activation saturation.
+    ///
+    /// Runs the (trained or loaded) model forward over real data and
+    /// reports the actual distribution of gate pre-activation values
+    /// (what goes INTO sigmoid, not what comes out), so "how close to
+    /// saturated is this model" is a measurement instead of a guess.
     #[arg(long)]
     diagnose_saturation: bool,
 
-    /// Sampling temperature. <1 sharpens the distribution toward already-
-    /// likely tokens (more repetitive, less erratic); >1 flattens it
-    /// (more diverse, more erratic). 1.0 = the model's raw distribution.
+    /// Sampling temperature (1.0 = the model's raw distribution).
+    ///
+    /// <1 sharpens the distribution toward already-likely tokens (more
+    /// repetitive, less erratic); >1 flattens it (more diverse, more
+    /// erratic).
     #[arg(long, default_value_t = 1.0)]
     temperature: f32,
 
-    /// Restrict sampling to only the K most probable tokens each step
-    /// (renormalized). Cuts off the long tail of barely-likely tokens
-    /// that's a lot of what makes small-model output read as noise.
+    /// Restrict sampling to only the K most probable tokens each step (renormalized).
+    ///
+    /// Cuts off the long tail of barely-likely tokens that's a lot of
+    /// what makes small-model output read as noise.
     #[arg(long)]
     top_k: Option<usize>,
 
-    /// Nucleus sampling: restrict to the smallest set of most-probable
-    /// tokens whose cumulative probability reaches this threshold (e.g.
-    /// 0.9), renormalized. An adaptive alternative/complement to --top-k.
+    /// Nucleus sampling: cumulative-probability threshold (e.g. 0.9), renormalized.
+    ///
+    /// Restricts to the smallest set of most-probable tokens whose
+    /// cumulative probability reaches this threshold. An adaptive
+    /// alternative/complement to --top-k.
     #[arg(long)]
     top_p: Option<f32>,
 }
