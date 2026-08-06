@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 
 /// A genuinely tiny word-level language model with a GRU memory, trained via real backprop.
 #[derive(Parser, Debug)]
-#[command(name = "tiny_llm", about, long_about = None)]
+#[command(name = "tinylm", about, long_about = None)]
 struct Cli {
     /// Training text file to learn from (default: training-data.txt next to this crate)
     #[arg(short = 'd', long = "data-set", value_name = "PATH")]
@@ -827,7 +827,7 @@ fn main() {
         println!("Estimated total training time: ~{total_time:.2?}");
         println!("\nSuggested command:");
         println!(
-            "  tiny_llm --data-set {} --epochs {suggested_epochs} --save-model <path>",
+            "  tinylm --data-set {} --epochs {suggested_epochs} --save-model <path>",
             data_path.display()
         );
         return;
