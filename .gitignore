@@ -1,4 +1,2 @@
-node_modules/
-rust/target/
+target/
 .claude/
-tiny_llm.js
