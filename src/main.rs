@@ -65,7 +65,7 @@ struct Cli {
 
     /// Vocabulary size cap: keeps the N most frequent tokens, everything
     /// else collapses to <unk>. Bounds the (expensive) output layer.
-    #[arg(long, default_value_t = 3000)]
+    #[arg(long, default_value_t = 8000)]
     vocab_size: usize,
 
     /// Embedding dimension (size of each token's learned vector)
@@ -73,7 +73,7 @@ struct Cli {
     embed_dim: usize,
 
     /// GRU hidden state size
-    #[arg(long, default_value_t = 48)]
+    #[arg(long, default_value_t = 96)]
     hidden_dim: usize,
 
     /// Truncated-BPTT chunk length: how many steps gradients actually flow
@@ -100,6 +100,13 @@ struct Cli {
     /// if --load-model was given and --epochs is 0).
     #[arg(long, value_name = "PATH")]
     save_model: Option<PathBuf>,
+
+    /// Also save (overwriting the same --save-model path) every N epochs
+    /// during training, not just at the end. Real crash-safety for long
+    /// runs: kill the process at epoch 40 of 83 and you still have epoch
+    /// 40's weights on disk, not nothing.
+    #[arg(long, value_name = "N")]
+    checkpoint_every: Option<usize>,
 
     /// Don't train — measure real gradient-computation throughput on one
     /// actual batch (your data, your hardware, your hyperparameters), then
@@ -974,6 +981,15 @@ fn main() {
 
         let start_time = Instant::now();
         for epoch in 0..cli.epochs {
+            // Cosine decay from cli.lr down to 10% of it over the course of
+            // training: full step size early (when big moves toward a
+            // better region are cheap and useful), progressively smaller
+            // steps later (when you're closer to a minimum and a big step
+            // would just overshoot it). Never decays all the way to zero,
+            // so the last epoch still actually learns something.
+            let progress = epoch as f32 / cli.epochs.max(1) as f32;
+            let lr = cli.lr * (0.1 + 0.9 * 0.5 * (1.0 + (std::f32::consts::PI * progress).cos()));
+
             order.shuffle(&mut rng); // real training shuffles each epoch; so do we
             let mut total_loss = 0.0f32;
 
@@ -994,12 +1010,19 @@ fn main() {
                     );
 
                 total_loss += grad.loss;
-                model.apply_gradients(&grad, cli.lr, batch_starts.len() * seq_len);
+                model.apply_gradients(&grad, lr, batch_starts.len() * seq_len);
             }
 
             let report_every = (cli.epochs / 20).max(1);
             if epoch % report_every == 0 || epoch == cli.epochs - 1 {
-                println!("epoch {}: avg loss = {:.4}", epoch, total_loss / (num_examples * seq_len) as f32);
+                println!("epoch {}: avg loss = {:.4} (lr={:.4})", epoch, total_loss / (num_examples * seq_len) as f32, lr);
+            }
+
+            if let (Some(n), Some(save_path)) = (cli.checkpoint_every, &cli.save_model) {
+                if (epoch + 1) % n == 0 {
+                    save_checkpoint(save_path, &model, &vocab).expect("failed to save mid-training checkpoint");
+                    println!("  (checkpoint saved at epoch {epoch})");
+                }
             }
         }
         println!("Training took {:.2?}", start_time.elapsed());
