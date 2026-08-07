@@ -1,0 +1,16 @@
+[package]
+name = "tiny_llm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -69,6 +69,11 @@ limitation of the last:
 
 [bengio]: https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf
 
+Each of the first two stages, plus the recurrent GRU's original pre-Adam form, is preserved as a
+frozen, runnable snapshot — real source, a real pretrained checkpoint from that stage, and real
+generated output, not reconstructed — in [`versions/`](versions/). Worth reading in order if you
+want the actual lineage of *why* each rewrite happened, not just a description of it.
+
 ### The pipeline, in order
 
 **Tokenizer.** Runs of letters/apostrophes become one word token
