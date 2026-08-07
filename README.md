@@ -45,6 +45,13 @@ Shakespeare, Alice in Wonderland, Sherlock Holmes, Grimm's Fairy Tales,
 and The Real Mother Goose. Pretrained models for all of these live in
 [`models/`](models/).
 
+Don't want to install Rust just to try it? Grab a prebuilt binary — for
+this version and every stage in [`versions/`](versions/) — from the
+[Releases page][releases] (Linux, macOS, Windows). No `cargo build`
+required.
+
+[releases]: https://github.com/theraccoonbear/TinyLM/releases
+
 ## 2. How it does it
 
 ### Evolution of this project

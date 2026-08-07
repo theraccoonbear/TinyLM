@@ -10,6 +10,12 @@ is a from-v2 reconstruction, trained fresh, because the project's real first ver
 buried the actual lesson each stage teaches. Every README's generated output is real and unedited —
 nothing here is retrained or touched up after the fact.
 
+Want to try one without installing Rust? Every stage below (plus the current
+root version) is built and attached to the [Releases page][releases] for
+Linux, macOS, and Windows — download, extract, run.
+
+[releases]: https://github.com/theraccoonbear/TinyLM/releases
+
 Read them in order if you want to feel the arc rather than just read about it:
 
 | | Stage | Architecture | What it added | What it still couldn't do |

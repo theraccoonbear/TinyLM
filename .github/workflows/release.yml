@@ -1,0 +1,109 @@
+name: Release binaries
+
+# Builds every version in versions/ plus the current root (v4) for
+# Linux, macOS, and Windows, so someone can grab a binary and try it
+# with no Rust toolchain of their own.
+#
+# - Push a tag like `v1` (any tag works, doesn't need to match a crate
+#   version -- this repo doesn't do per-version SemVer) to build AND
+#   publish a GitHub Release with all 12 archives attached.
+# - "Run workflow" from the Actions tab does the same build/package
+#   steps without publishing anything, so you can sanity-check a
+#   change before cutting a tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor:
+          - slug: v1-char-level
+            manifest: versions/v1-char-level/Cargo.toml
+            readme: versions/v1-char-level/README.md
+            binname: tiny_llm
+          - slug: v2-fixed-context-mlp
+            manifest: versions/v2-fixed-context-mlp/Cargo.toml
+            readme: versions/v2-fixed-context-mlp/README.md
+            binname: tiny_llm
+          - slug: v3-gru-sgd
+            manifest: versions/v3-gru-sgd/Cargo.toml
+            readme: versions/v3-gru-sgd/README.md
+            binname: tiny_llm
+          - slug: v4-gru-adam
+            manifest: Cargo.toml
+            readme: README.md
+            binname: tinylm
+        platform:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            ext: ".exe"
+
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Build
+        run: >
+          cargo build --release
+          --manifest-path ${{ matrix.flavor.manifest }}
+          --target ${{ matrix.platform.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="tinylm-${{ matrix.flavor.slug }}-${{ matrix.platform.target }}"
+          manifest_dir="$(dirname "${{ matrix.flavor.manifest }}")"
+          bin="$manifest_dir/target/${{ matrix.platform.target }}/release/${{ matrix.flavor.binname }}${{ matrix.platform.ext }}"
+
+          stage="dist/$name"
+          mkdir -p "$stage"
+          cp "$bin" "$stage/"
+          cp "${{ matrix.flavor.readme }}" "$stage/README.md"
+
+          mkdir -p out
+          if [ "${{ matrix.platform.archive }}" = "zip" ]; then
+            (cd dist && 7z a -tzip "../out/$name.zip" "$name" >/dev/null)
+          else
+            tar -czf "out/$name.tar.gz" -C dist "$name"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tinylm-${{ matrix.flavor.slug }}-${{ matrix.platform.target }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
