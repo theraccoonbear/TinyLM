@@ -2,10 +2,13 @@
 
 This project went through several real architectural rewrites, each one forced by a concrete
 limitation of the version before it — not refactors for their own sake. Each folder here is a
-**frozen, runnable snapshot**: real source code and a real pretrained checkpoint extracted
-byte-for-byte from the commit where that stage lived, plus a README with the exact params used and
-real (unedited) generated output from that checkpoint. Nothing in these folders is retrained or
-touched up — you're seeing exactly what that stage of the project actually produced.
+**runnable snapshot** in the same Rust codebase, deliberately, so you can `diff` between stages
+instead of reading about the differences secondhand: v2 and v3 are frozen byte-for-byte from the
+commits where those stages actually lived (real source, real pretrained checkpoint, untouched); v1
+is a from-v2 reconstruction, trained fresh, because the project's real first version was TypeScript
+(`tiny_llm.ts`, still in git history at commit [`414de75`](https://github.com/theraccoonbear/TinyLM/commit/414de75)) and a language switch on top of an architecture switch would have
+buried the actual lesson each stage teaches. Every README's generated output is real and unedited —
+nothing here is retrained or touched up after the fact.
 
 Read them in order if you want to feel the arc rather than just read about it:
 
@@ -15,6 +18,10 @@ Read them in order if you want to feel the arc rather than just read about it:
 | [v2](v2-fixed-context-mlp/) | fixed-context MLP | word embeddings + 4-token window | real words, real vocabulary | context hard-capped at 4 tokens — an architectural ceiling |
 | [v3](v3-gru-sgd/) | recurrent GRU, plain SGD | a real hidden state + backprop-through-time | unbounded context, no more window ceiling | SGD converged too slowly/unreliably, and nothing caught it when it did |
 | v4 | *(repo root — you're already there)* | recurrent GRU, Adam | reliable convergence + an automated sanity check/retry loop that catches undertraining instead of shipping it | see the root [README](../README.md) for what's still open |
+
+v1 and v2 are, structurally, the *same code* — v1 is v2 with `context=1` and a character tokenizer
+instead of a word one. Worth reading v1's README first for why that's true and what it demonstrates
+on its own.
 
 ## The one-sentence version of each jump
 

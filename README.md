@@ -69,10 +69,13 @@ limitation of the last:
 
 [bengio]: https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf
 
-Each of the first two stages, plus the recurrent GRU's original pre-Adam form, is preserved as a
-frozen, runnable snapshot — real source, a real pretrained checkpoint from that stage, and real
-generated output, not reconstructed — in [`versions/`](versions/). Worth reading in order if you
-want the actual lineage of *why* each rewrite happened, not just a description of it.
+All three stages are preserved as runnable snapshots, in the same Rust codebase, in
+[`versions/`](versions/) — v2 and the recurrent GRU's original pre-Adam form are frozen
+byte-for-byte from the commits where they actually lived; v1 is a from-v2 reconstruction (the
+project's real first version was TypeScript, see git history), trained fresh so the whole arc reads
+as one language you can `diff` between stages. Every README's generated output is real and
+unedited. Worth reading in order if you want the actual lineage of *why* each rewrite happened, not
+just a description of it.
 
 ### The pipeline, in order
 
