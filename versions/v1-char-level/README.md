@@ -45,6 +45,11 @@ cargo build --release
 - 50 epochs, avg loss **3.26 → 2.47**, **416.05s** total (~8.3s/epoch — much cheaper per-epoch
   than v2's word-level training, since the output layer here is 84-wide instead of 3000-wide).
 
+Run on the [same reference machine](../README.md#reference-machine) as every other version's
+timing in this project — see `versions/README.md`'s
+["what it actually costs to get here"](../README.md#what-it-actually-costs-to-get-here) table for
+the full v1→v4 comparison on this identical corpus.
+
 ## Real output (this checkpoint, unedited, `--epochs 0 --length 150`)
 
 ```

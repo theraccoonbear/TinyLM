@@ -18,6 +18,22 @@ condition on up to 4 tokens of history instead of 1 character — a genuine step
 committed checkpoint (`shakespeare.model`, trained then, loaded as-is here) used `vocab_size=3000`,
 `context=4`, `embed_dim=16`, `hidden_dim=48`, trained 15 epochs to average loss 7.38 → 5.13.
 
+## Training cost
+
+The original commit that produced this checkpoint never recorded wall-clock time. Rather than
+guess, this same recipe (identical flags, same `corpora/shakespeare.txt`) was re-run fresh on the
+[reference machine](../README.md#reference-machine) to measure it — that fresh run is *not* the
+checkpoint shipped above (it's not committed anywhere; the shipped checkpoint stays untouched,
+frozen from `414de75`), it's purely a timing measurement:
+
+```
+cd versions/v2-fixed-context-mlp
+./target/release/tiny_llm --data-set ../../corpora/shakespeare.txt --epochs 15 --save-model /tmp/timing-only.model
+```
+
+15 epochs, avg loss **7.52 → 5.12** (random init means this isn't bit-identical to the shipped
+checkpoint's 7.38 → 5.13, but it's the same recipe landing in the same place) — **821.56s** total.
+
 ## Run it yourself
 
 ```

@@ -100,12 +100,43 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      # Pretrained checkpoints are tracked in git (they're small, and being
+      # checked in is what lets versions/'s "real checkpoint, right there in
+      # the commit" story work) but a lot of people don't realize that and
+      # would rather grab just the weights than clone the repo. Attach a
+      # renamed copy of every committed .model file here too, alongside the
+      # binaries -- pure convenience, doesn't change what's tracked in git.
+      - name: Stage pretrained checkpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p models_out
+          declare -A dirs=(
+            [v1-char-level]=versions/v1-char-level
+            [v2-fixed-context-mlp]=versions/v2-fixed-context-mlp
+            [v3-gru-sgd]=versions/v3-gru-sgd/models
+            [v4-gru-adam]=models
+          )
+          for slug in "${!dirs[@]}"; do
+            d="${dirs[$slug]}"
+            [ -d "$d" ] || continue
+            for f in "$d"/*.model; do
+              [ -e "$f" ] || continue
+              cp "$f" "models_out/model-${slug}-$(basename "$f")"
+            done
+          done
+          ls -la models_out/
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: |
+            artifacts/*
+            models_out/*
           generate_release_notes: true

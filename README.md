@@ -48,7 +48,10 @@ and The Real Mother Goose. Pretrained models for all of these live in
 Don't want to install Rust just to try it? Grab a prebuilt binary — for
 this version and every stage in [`versions/`](versions/) — from the
 [Releases page][releases] (Linux, macOS, Windows). No `cargo build`
-required.
+required. Every pretrained `.model` file in this project is attached there
+too, individually, if you just want the weights without cloning the repo —
+they're checked into git for `versions/`' "real checkpoint, right there in
+the commit" story, not because that's the only way to get them.
 
 [releases]: https://github.com/theraccoonbear/TinyLM/releases
 
@@ -313,6 +316,29 @@ count per corpus wasn't predicted in advance, it's however many
 | `models/sherlock.model` | The Adventures of Sherlock Holmes |
 | `models/grimm.model` | Grimm's Fairy Tales |
 | `models/mothergoose.model` | The Real Mother Goose (nursery rhymes) |
+
+Real wall-clock training time per model, from `.retrain-logs/`, all on the same
+[reference machine](versions/README.md#reference-machine) as `versions/`' own timing figures:
+
+| Model | Epochs | Loss | Wall-clock |
+|---|---|---|---|
+| `shakespeare` | 20 | 6.48 → 5.06 | 10863.21s (~3.02hr) |
+| `sherlock` | 20 | 8.78 → 5.96 | 2266.96s |
+| `grimm` | 20 | 8.42 → 5.79 | 1380.35s |
+| `alice` | 20 | 7.95 → 5.67 | 246.46s |
+| `mothergoose` | 20 | 7.99 → 5.81 | 136.03s |
+| `macbeth` | 30 | — → 6.05 | 140.6s |
+
+Wall-clock scales with corpus size (`shakespeare` is the full canon; `mothergoose` is nursery
+rhymes), not just epoch count — everything here shares the same `vocab_size=8000`/`hidden_dim=96`
+capacity and the same reference machine. `macbeth`'s row is the direct SGD-vs-Adam proof cited in
+the FAQ below: this Adam run (30 epochs, 140.6s) is what replaced an earlier plain-SGD attempt that
+took 78 epochs / 345.8s and still failed the sanity check — no comparable starting loss is quoted
+for it here because that number was reported inline in the commit message, not a saved log file,
+and only the final figure survived.
+
+Curious what the *same corpus* cost across every architecture this project has gone through, not
+just the current one? See [`versions/`'s own comparison table](versions/README.md#what-it-actually-costs-to-get-here) — v1 through v4, all trained on this identical `shakespeare.txt`.
 
 ## FAQ
 

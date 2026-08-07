@@ -28,7 +28,52 @@ and no retry-on-undertraining loop — all three were added later, specifically 
 problems this version's plain-SGD training turned out to have (see below).
 
 Five checkpoints from this commit are included as-committed: `alice`, `grimm`, `macbeth`,
-`mothergoose`, `sherlock`.
+`mothergoose`, `sherlock`. A sixth, `shakespeare`, is included too but wasn't part of this commit
+— see below for exactly where it actually comes from.
+
+## The shakespeare checkpoint, and why it's not from this commit
+
+This commit never trained on Shakespeare at all — `d4d7203`'s diff shows the *previous*
+architecture's `shakespeare.model` (v2's, 833,014 bytes) being deleted, and nothing replacing it.
+The first GRU-era Shakespeare run happened 29 minutes later, in commit
+[`1a6fa9b`](https://github.com/theraccoonbear/TinyLM/commit/1a6fa9b) — still plain SGD, still
+`vocab_size=3000`/`hidden_dim=48` (confirmed by checkpoint byte size: 858,022 bytes, right in the
+same range as this folder's other five checkpoints; the *next* morning's commit bumped those
+defaults to 8000/96, which is what today's root `models/shakespeare.model` uses instead). The only
+code that changed between `d4d7203` and `1a6fa9b` is CLI-surface additions (`--analyze`,
+`--prompt`, `--seed`) — the `Model` struct and its forward/backward math are untouched, so this
+checkpoint loads and runs correctly against this exact frozen binary. Extracted byte-for-byte via
+`git show 1a6fa9b:models/shakespeare.model`, verified against the blob hash before being added
+here.
+
+**15 epochs, avg loss 7.74 → 5.44, 874.5s** — plain SGD, on the same `corpora/shakespeare.txt`
+used by [v1](../v1-char-level/) and [v2](../v2-fixed-context-mlp/), which is what makes this the
+real cross-version comparison point rather than `mothergoose`/`alice`/etc. below (those never had
+a v1/v2 equivalent trained on the same text). See the [reference machine](../README.md#reference-machine)
+for what "874.5s" is relative to — this specific number is from the original 2026-08-05 run, not
+re-measured on that machine, since (unlike v2's missing timing) it was already recorded honestly
+at the time.
+
+```
+./target/release/tiny_llm --load-model models/shakespeare.model --epochs 0 --length 150
+```
+
+```
+Loaded model from models/shakespeare.model (vocab 3000, embed_dim 16, hidden_dim 48)
+--epochs 0: skipping training, using the model as loaded.
+
+--- Generated text ---
+courtesy whither died <unk> PROTEUS And <unk> proper time <unk>
+.-
+Highness I I silver. Which, so Dog. <unk>. <unk> deserv'd in I <unk> in quarrel,. Orleans Don me few <unk> you <unk>?
+```
+
+Real character names spanning the whole canon (PROTEUS, Capulet, JUSTICE, AENEAS, BIONDELLO,
+Roderigo, KATHERINA, CRESSIDA, Posthumus, LEONTES, HOLOFERNES...) — recurrence is clearly doing
+*something* — but still mostly word-salad at 15 epochs. Directly comparable to
+[v1's](../v1-char-level/) 50-epoch/416s and [v2's](../v2-fixed-context-mlp/) 15-epoch/822s runs on
+the identical text: this is the real cost of *this* architecture reaching *this* point, on *this*
+corpus, no cherry-picking.
 
 ## Run it yourself
 
